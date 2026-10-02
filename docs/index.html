@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#4c0519">
+  <title>うねりトラッカー</title>
+  <style>
+    :root {
+      --bg: #f3f4f6;
+      --card: #ffffff;
+      --text: #111827;
+      --muted: #6b7280;
+      --line: #e5e7eb;
+      --up: #dc2626;
+      --down: #059669;
+      --accent: #9f1239;
+      --accent-soft: #fff1f2;
+      --shadow: 0 8px 24px rgba(17, 24, 39, 0.06);
+      --chip: #f9fafb;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f1419;
+        --card: #1a212b;
+        --text: #f3f4f6;
+        --muted: #9ca3af;
+        --line: #2a3441;
+        --up: #fb7185;
+        --down: #34d399;
+        --accent: #fb7185;
+        --accent-soft: #3f1d2a;
+        --shadow: none;
+        --chip: #111820;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", Meiryo, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.45;
+      -webkit-text-size-adjust: 100%;
+    }
+    .hero {
+      background: linear-gradient(160deg, #1f2937 0%, #4c0519 100%);
+      color: #fff;
+      padding: calc(18px + env(safe-area-inset-top)) 16px 16px;
+    }
+    .wrap { max-width: 960px; margin: 0 auto; }
+    .kicker { font-size: 12px; letter-spacing: 0.12em; font-weight: 700; opacity: 0.8; }
+    h1 { margin: 4px 0 0; font-size: 26px; }
+    .sub { margin: 6px 0 0; color: rgba(255,255,255,0.78); font-size: 13px; }
+    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 14px; }
+    .stat { background: rgba(255,255,255,0.08); border-radius: 10px; padding: 8px 10px; }
+    .stat b { display: block; font-size: 18px; }
+    .stat span { font-size: 11px; opacity: 0.75; }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+    .chip { background: rgba(255,255,255,0.12); border-radius: 999px; padding: 4px 8px; font-size: 12px; }
+    .note { margin-top: 12px; background: #fff7ed; color: #9a3412; border-radius: 10px; padding: 10px 12px; font-size: 13px; }
+    .tabs {
+      position: sticky; top: 0; z-index: 5;
+      background: var(--bg);
+      background: color-mix(in srgb, var(--bg) 92%, transparent);
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--line);
+    }
+    .tablist { display: flex; gap: 6px; overflow-x: auto; padding: 10px 16px; }
+    .tablist button {
+      border: 1px solid var(--line); background: var(--card); color: var(--text);
+      border-radius: 999px; padding: 8px 12px; font-size: 13px; white-space: nowrap; min-height: 40px;
+    }
+    .tablist button[aria-selected="true"] { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .toolbar { display: none; gap: 8px; padding: 12px 16px 0; flex-wrap: wrap; }
+    .toolbar.show { display: flex; }
+    .toolbar input, .toolbar select {
+      background: var(--card); color: var(--text); border: 1px solid var(--line);
+      border-radius: 10px; padding: 10px 12px; font-size: 16px; min-height: 44px;
+    }
+    .toolbar input { flex: 1 1 180px; }
+    main { padding: 12px 16px calc(24px + env(safe-area-inset-bottom)); }
+    .section { margin: 0 0 18px; }
+    .section h2 { margin: 0 0 8px; font-size: 16px; }
+    .count { color: var(--muted); font-size: 12px; font-weight: 600; }
+    .grid { display: grid; gap: 10px; }
+    .card {
+      background: var(--card); border-radius: 14px; padding: 12px; box-shadow: var(--shadow);
+      border: 1px solid var(--line);
+    }
+    .head { display: flex; justify-content: space-between; gap: 10px; }
+    .name { font-weight: 700; font-size: 16px; }
+    .code { color: var(--muted); font-weight: 600; font-size: 13px; margin-left: 6px; }
+    .meta, .range { color: var(--muted); font-size: 12px; margin-top: 3px; }
+    .price { text-align: right; font-weight: 800; font-size: 18px; }
+    .pct { text-align: right; font-weight: 800; }
+    .up { color: var(--up); }
+    .down { color: var(--down); }
+    .flat { color: var(--muted); }
+    .metrics { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .metric { background: var(--chip); border-radius: 8px; padding: 4px 8px; font-size: 12px; }
+    .tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .tag { border-radius: 999px; padding: 3px 8px; font-size: 11px; font-weight: 700; background: var(--accent-soft); color: var(--accent); }
+    .tag.profit { background: #fee2e2; color: #b91c1c; }
+    .tag.stop { background: #d1fae5; color: #047857; }
+    .tag.bottom { background: #dbeafe; color: #1d4ed8; }
+    .tag.hot { background: #ffedd5; color: #c2410c; }
+    .tag.vol { background: #ede9fe; color: #6d28d9; }
+    .tag.break { background: #e0e7ff; color: #3730a3; }
+    .tag.gap { background: #cffafe; color: #0e7490; }
+    .tag.review { background: #f3f4f6; color: #374151; }
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      margin-top: 10px; min-height: 40px; padding: 8px 12px; border-radius: 10px;
+      background: var(--accent); color: #fff; text-decoration: none; font-size: 13px; font-weight: 700;
+    }
+    .empty { color: var(--muted); font-size: 14px; padding: 8px 0 4px; }
+    .rank { color: var(--muted); font-size: 12px; font-weight: 700; }
+    footer { color: var(--muted); font-size: 12px; padding: 4px 0 12px; }
+    footer a { color: var(--accent); }
+    details { margin-top: 8px; }
+    @media (max-width: 720px) {
+      .stats { grid-template-columns: repeat(2, 1fr); }
+      h1 { font-size: 22px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="wrap">
+      <div class="kicker">UNERI TRACKER</div>
+      <h1>うねりトラッカー</h1>
+      <p class="sub" id="subtitle">読み込み中…</p>
+      <div class="stats" id="stats"></div>
+      <div class="chips" id="chips"></div>
+      <div id="note"></div>
+    </div>
+  </header>
+  <nav class="tabs">
+    <div class="wrap tablist" role="tablist" id="tabs">
+      <button type="button" data-tab="signals" role="tab">本日シグナル</button>
+      <button type="button" data-tab="rank" role="tab">騰落ランキング</button>
+      <button type="button" data-tab="review" role="tab">要棚卸し</button>
+      <button type="button" data-tab="all" role="tab">全銘柄</button>
+    </div>
+  </nav>
+  <div class="wrap toolbar" id="toolbar">
+    <input id="q" type="search" placeholder="コード・銘柄名・グループ" enterkeyhint="search" autocomplete="off">
+    <select id="group"><option value="">すべてのグループ</option></select>
+    <select id="asset">
+      <option value="">日本・米国</option>
+      <option value="STK">日本株</option>
+      <option value="USS">米国株</option>
+    </select>
+    <select id="sort">
+      <option value="group">グループ順</option>
+      <option value="change_desc">騰落率が高い順</option>
+      <option value="change_asc">騰落率が低い順</option>
+      <option value="code">コード順</option>
+    </select>
+  </div>
+  <main>
+    <div class="wrap" id="main"></div>
+    <div class="wrap">
+      <footer>
+        <p>上昇は赤、下落は緑。勝率は、価格を取得できた銘柄のうち登録来騰落率がプラスの割合です。</p>
+        <details>
+          <summary>シグナルの定義</summary>
+          <p>うねり底値: RSI(14) が 30 以下、かつ 25日移動平均乖離が -5% 以下。</p>
+          <p>過熱警戒: 25日移動平均乖離が +10% 以上。</p>
+          <p>ブレイク: 終値が25日線の上、出来高が直前5日平均の 1.5 倍以上、乖離が +10% 未満。</p>
+          <p>出来高急増: 当日出来高が直前5営業日平均の 2 倍以上。</p>
+          <p>ギャップダウン: 始値が前日終値より -2% 以下。</p>
+          <p>利確目標到達: 登録来 +15% 以上。損切り警戒: 登録来 -8% 以下。</p>
+          <p>棚卸し候補: source / strategy / グループ名に YouTube を含み、登録から 30 日以上。</p>
+        </details>
+        <p><a href="https://github.com/mnghfxiidm4ad-rgb/uneri-tracker">GitHub</a></p>
+      </footer>
+    </div>
+  </main>
+  <script>
+    const TAGS = {
+      "利確目標到達": ["利確", "profit"],
+      "損切り警戒": ["損切り", "stop"],
+      "うねり底値シグナル": ["うねり底", "bottom"],
+      "過熱警戒（寄り天・押し目待ち）": ["過熱", "hot"],
+      "出来高急増": ["出来高", "vol"],
+      "ブレイク": ["ブレイク", "break"],
+      "ギャップダウン": ["ギャップ", "gap"],
+      "棚卸し候補（30日経過）": ["棚卸し", "review"]
+    };
+    const MODE = { morning: "朝レポート", evening: "夕方レポート", weekend: "週末棚卸し", migrate: "初期移行" };
+    let DATA = null;
+    const state = { tab: "signals", q: "", group: "", asset: "", sort: "group" };
+
+    function esc(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[ch]));
+    }
+    function isNum(value) { return typeof value === "number" && Number.isFinite(value); }
+    function fmtPct(value) {
+      if (!isNum(value)) return "—";
+      return (value > 0 ? "+" : "") + value.toFixed(2) + "%";
+    }
+    function fmtPrice(value) {
+      if (!isNum(value)) return "—";
+      return value.toLocaleString("ja-JP", { maximumFractionDigits: 2 });
+    }
+    function pctClass(value) {
+      if (!isNum(value) || value === 0) return "flat";
+      return value > 0 ? "up" : "down";
+    }
+    function fmtTime(iso) {
+      if (!iso) return "—";
+      const date = new Date(iso);
+      if (Number.isNaN(date.getTime())) return iso;
+      return new Intl.DateTimeFormat("ja-JP", {
+        timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit"
+      }).format(date);
+    }
+    function groupsOf(stock) {
+      if (stock.groups && stock.groups.length) return stock.groups.join(" / ");
+      return stock.group_name || "";
+    }
+    function card(stock, primary, rank) {
+      const key = primary || "change_pct";
+      const tags = (stock.signals || []).map((name) => {
+        const spec = TAGS[name] || [name, ""];
+        return `<span class="tag ${spec[1]}" title="${esc(name)}">${esc(spec[0])}</span>`;
+      }).join("");
+      const secondary = key === "change_pct" ? "" : `<div class="meta">登録来 <span class="${pctClass(stock.change_pct)}">${fmtPct(stock.change_pct)}</span></div>`;
+      const rankHtml = rank ? `<div class="rank">#${rank}</div>` : "";
+      return `<article class="card">
+        <div class="head">
+          <div>
+            ${rankHtml}
+            <div class="name">${esc(stock.name || stock.code)}<span class="code">${esc(stock.code)}</span></div>
+            <div class="meta">${esc(groupsOf(stock) || "グループなし")} · ${esc(stock.market || stock.asset_type || "")} · ${isNum(stock.days_elapsed) ? stock.days_elapsed + "日" : "—"}</div>
+          </div>
+          <div>
+            <div class="price">${fmtPrice(stock.current_price)}</div>
+            <div class="pct ${pctClass(stock[key])}">${fmtPct(stock[key])}</div>
+            ${secondary}
+          </div>
+        </div>
+        <div class="range">基準 ${fmtPrice(stock.base_price)} · 高値 ${fmtPrice(stock.max_high_price)} · 安値 ${fmtPrice(stock.min_low_price)}</div>
+        <div class="metrics">
+          <span class="metric">RSI ${isNum(stock.rsi14) ? stock.rsi14.toFixed(1) : "—"}</span>
+          <span class="metric">乖離 ${fmtPct(stock.ma25_dev)}</span>
+          <span class="metric">出来高 ${isNum(stock.volume_ratio) ? stock.volume_ratio.toFixed(1) + "x" : "—"}</span>
+          <span class="metric">週次 ${fmtPct(stock.week_change_pct)}</span>
+        </div>
+        ${tags ? `<div class="tags">${tags}</div>` : ""}
+        <a class="btn" href="${esc(stock.chronicle_url)}" target="_blank" rel="noopener noreferrer">StockChronicle</a>
+      </article>`;
+    }
+    function section(title, items, primary) {
+      const list = items || [];
+      const body = list.length
+        ? `<div class="grid">${list.map((stock, index) => card(stock, primary, index + 1)).join("")}</div>`
+        : `<p class="empty">該当する銘柄はありません。</p>`;
+      return `<section class="section"><h2>${esc(title)} <span class="count">${list.length}</span></h2>${body}</section>`;
+    }
+    function renderHero() {
+      const summary = DATA.summary || {};
+      const mode = MODE[DATA.run_mode] || DATA.run_mode || "";
+      document.getElementById("subtitle").textContent =
+        `${mode} · 更新 ${fmtTime(DATA.generated_at)} · 株価日 ${summary.price_as_of || "—"}`;
+      const win = isNum(summary.win_rate) ? summary.win_rate.toFixed(1) + "%" : "—";
+      const avg = fmtPct(summary.avg_change_pct);
+      document.getElementById("stats").innerHTML = [
+        ["銘柄", summary.unique_codes ?? "—"],
+        ["勝率", win],
+        ["平均騰落", avg],
+        ["底値", summary.bottom_count ?? 0]
+      ].map(([label, value]) => `<div class="stat"><span>${label}</span><b>${esc(value)}</b></div>`).join("");
+      const chips = [
+        ["利確", summary.take_profit_count],
+        ["損切り", summary.stop_loss_count],
+        ["過熱", summary.overheat_count],
+        ["ブレイク", summary.breakout_count],
+        ["ギャップ", summary.gap_down_count],
+        ["棚卸し", summary.review_count],
+        ["取得失敗", summary.fetch_failed]
+      ];
+      document.getElementById("chips").innerHTML = chips
+        .map(([label, value]) => `<span class="chip">${label} ${esc(value ?? 0)}</span>`).join("");
+      const note = document.getElementById("note");
+      note.innerHTML = DATA.note ? `<div class="note">${esc(DATA.note)}</div>` : "";
+    }
+    function renderTabs() {
+      document.querySelectorAll("#tabs button").forEach((button) => {
+        button.setAttribute("aria-selected", button.dataset.tab === state.tab ? "true" : "false");
+      });
+      document.getElementById("toolbar").classList.toggle("show", state.tab === "all");
+    }
+    function filteredStocks() {
+      const q = state.q.trim().toLowerCase();
+      let rows = (DATA.stocks || []).slice();
+      if (state.group) rows = rows.filter((stock) => stock.group_name === state.group);
+      if (state.asset) rows = rows.filter((stock) => stock.asset_type === state.asset);
+      if (q) {
+        rows = rows.filter((stock) => [stock.code, stock.name, stock.group_name, stock.market, stock.status, (stock.signals || []).join(" "), stock.ticker]
+          .join(" ").toLowerCase().includes(q));
+      }
+      const num = (stock, key) => isNum(stock[key]) ? stock[key] : null;
+      if (state.sort === "change_desc" || state.sort === "change_asc") {
+        const dir = state.sort === "change_desc" ? -1 : 1;
+        rows.sort((a, b) => {
+          const av = num(a, "change_pct");
+          const bv = num(b, "change_pct");
+          if (av === null && bv === null) return 0;
+          if (av === null) return 1;
+          if (bv === null) return -1;
+          return (av - bv) * dir;
+        });
+      } else if (state.sort === "code") {
+        rows.sort((a, b) => String(a.code).localeCompare(String(b.code), "ja"));
+      } else {
+        rows.sort((a, b) => String(a.group_name).localeCompare(String(b.group_name), "ja")
+          || String(a.code).localeCompare(String(b.code), "ja"));
+      }
+      return rows;
+    }
+    function renderMain() {
+      const root = document.getElementById("main");
+      if (state.tab === "signals") {
+        root.innerHTML = [
+          section("うねり底値シグナル", DATA.bottom_signals, "change_pct"),
+          section("過熱警戒", DATA.overheat_signals, "ma25_dev"),
+          section("ブレイク", DATA.breakout_signals, "change_pct"),
+          section("出来高急増", DATA.volume_surge, "change_pct"),
+          section("ギャップダウン", DATA.gap_down, "gap_pct"),
+          section("前夜の米国株（上昇）", DATA.us_gainers, "day_change_pct"),
+          section("前夜の米国株（下落）", DATA.us_losers, "day_change_pct"),
+          section("利確目標到達", DATA.take_profit, "change_pct"),
+          section("損切り警戒", DATA.stop_loss, "change_pct")
+        ].join("");
+        return;
+      }
+      if (state.tab === "rank") {
+        root.innerHTML = [
+          section("登録来 上昇率 TOP10", DATA.top_gainers, "change_pct"),
+          section("登録来 下落率 TOP10", DATA.top_losers, "change_pct"),
+          section("週間 上昇", DATA.weekly_gainers, "week_change_pct"),
+          section("週間 下落", DATA.weekly_losers, "week_change_pct")
+        ].join("");
+        return;
+      }
+      if (state.tab === "review") {
+        const hint = `<p class="empty">YouTube 由来にするには、watchlist の source か strategy に YouTube と入れてください。30日未満のときは棚卸しリストは空です。</p>`;
+        root.innerHTML = hint
+          + section("YouTube・30日経過", DATA.youtube_review, "change_pct")
+          + section("登録後30日超", DATA.review_30d, "change_pct");
+        return;
+      }
+      const rows = filteredStocks();
+      root.innerHTML = `<section class="section"><h2>全銘柄 <span class="count">${rows.length} / ${(DATA.stocks || []).length}</span></h2>`
+        + (rows.length ? `<div class="grid">${rows.map((stock) => card(stock)).join("")}</div>` : `<p class="empty">一致する銘柄はありません。</p>`)
+        + `</section>`;
+    }
+    function setTab(id) {
+      state.tab = id;
+      if (location.hash !== "#" + id) history.replaceState(null, "", "#" + id);
+      renderTabs();
+      renderMain();
+    }
+    function fillGroups() {
+      const select = document.getElementById("group");
+      (DATA.groups || []).forEach((group) => {
+        const option = document.createElement("option");
+        option.value = group;
+        option.textContent = group;
+        select.appendChild(option);
+      });
+    }
+    async function loadSummary() {
+      const urls = ["latest_summary.json", "../data/latest_summary.json"];
+      let lastError = null;
+      for (const url of urls) {
+        try {
+          const response = await fetch(url + "?t=" + Date.now());
+          if (!response.ok) throw new Error(response.status + " " + url);
+          return await response.json();
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      throw lastError || new Error("latest_summary.json を読めません");
+    }
+    document.getElementById("tabs").addEventListener("click", (event) => {
+      const button = event.target.closest("button");
+      if (button) setTab(button.dataset.tab);
+    });
+    document.getElementById("q").addEventListener("input", (event) => {
+      state.q = event.target.value;
+      if (state.tab === "all") renderMain();
+    });
+    ["group", "asset", "sort"].forEach((id) => {
+      document.getElementById(id).addEventListener("change", (event) => {
+        state[id] = event.target.value;
+        if (state.tab === "all") renderMain();
+      });
+    });
+    loadSummary().then((data) => {
+      DATA = data;
+      const hash = location.hash.replace("#", "");
+      if (["signals", "rank", "review", "all"].includes(hash)) state.tab = hash;
+      fillGroups();
+      renderHero();
+      renderTabs();
+      renderMain();
+    }).catch((error) => {
+      document.getElementById("subtitle").textContent = "データを読めませんでした";
+      document.getElementById("main").innerHTML =
+        `<p class="empty">latest_summary.json を取得できません。GitHub Pages で開くか、docs フォルダで python -m http.server を使ってください。（${esc(error.message)}）</p>`;
+    });
+  </script>
+</body>
+</html>

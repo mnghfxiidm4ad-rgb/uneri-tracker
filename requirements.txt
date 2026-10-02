@@ -1,0 +1,6 @@
+# uneri-tracker
+# GitHub Actions (Python 3.11) and local installs
+yfinance>=0.2.54
+pandas>=2.2.2
+numpy>=1.26.4
+requests>=2.32.3
