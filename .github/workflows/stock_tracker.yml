@@ -105,7 +105,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git add -- "data/watchlist_tracker.csv" "data/latest_summary.json" "docs/latest_summary.json"
+          git add -- "data/watchlist_tracker.csv" "docs/watchlist_tracker.csv" "data/latest_summary.json" "docs/latest_summary.json"
           if git diff --cached --quiet; then
             echo "コミットする変更はありません"
           else

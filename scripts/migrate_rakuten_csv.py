@@ -242,6 +242,15 @@ def merge_rows(
     return merged
 
 
+
+def publish_tracker_csv(path: Path) -> None:
+    """GitHub Pages の docs から追跡CSVをダウンロードできるように複製する。"""
+    dest = DOCS_DIR / "watchlist_tracker.csv"
+    if path.resolve() == dest.resolve():
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(path.read_bytes())
+
 def write_tracker(path: Path, rows: list[dict[str, str]], extra_columns: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = list(COLUMNS)
@@ -255,6 +264,7 @@ def write_tracker(path: Path, rows: list[dict[str, str]], extra_columns: list[st
         for row in rows:
             writer.writerow({name: (row.get(name) or "") for name in fieldnames})
     tmp.replace(path)
+    publish_tracker_csv(path)
 
 
 def stock_stub(row: dict[str, str]) -> dict:

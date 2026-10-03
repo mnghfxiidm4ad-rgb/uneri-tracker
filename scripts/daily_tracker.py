@@ -544,6 +544,15 @@ def read_tracker(path: Path) -> pd.DataFrame:
     raise RuntimeError(f"ウォッチリストを読み込めません: {path} ({last_error})")
 
 
+
+def publish_tracker_csv(path: Path) -> None:
+    """GitHub Pages の docs から追跡CSVをダウンロードできるように複製する。"""
+    dest = DOCS_DIR / "watchlist_tracker.csv"
+    if path.resolve() == dest.resolve():
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(path.read_bytes())
+
 def write_tracker(path: Path, records: list[dict]) -> None:
     frame = pd.DataFrame(records)
     for column in COLUMNS:
@@ -556,6 +565,7 @@ def write_tracker(path: Path, records: list[dict]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     frame.to_csv(tmp, index=False, encoding="utf-8-sig", lineterminator="\n")
     os.replace(tmp, path)
+    publish_tracker_csv(path)
 
 
 def to_stock(rec: dict) -> dict:

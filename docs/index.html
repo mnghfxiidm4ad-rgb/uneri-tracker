@@ -59,6 +59,12 @@
     .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
     .chip { background: rgba(255,255,255,0.12); border-radius: 999px; padding: 4px 8px; font-size: 12px; }
     .note { margin-top: 12px; background: #fff7ed; color: #9a3412; border-radius: 10px; padding: 10px 12px; font-size: 13px; }
+    .downloads { margin: 14px 0 0; }
+    .download {
+      display: inline-flex; align-items: center; justify-content: center;
+      min-height: 44px; padding: 10px 14px; border-radius: 10px;
+      background: #fff; color: #9f1239; font-weight: 700; font-size: 14px; text-decoration: none;
+    }
     .tabs {
       position: sticky; top: 0; z-index: 5;
       background: var(--bg);
@@ -133,6 +139,7 @@
       <p class="sub" id="subtitle">読み込み中…</p>
       <div class="stats" id="stats"></div>
       <div class="chips" id="chips"></div>
+      <p class="downloads"><a class="download" id="csv-link" href="watchlist_tracker.csv" download="watchlist_tracker.csv">追跡CSVをダウンロード</a></p>
       <div id="note"></div>
     </div>
   </header>
@@ -408,6 +415,10 @@
       DATA = data;
       const hash = location.hash.replace("#", "");
       if (["signals", "rank", "review", "all"].includes(hash)) state.tab = hash;
+      const csvLink = document.getElementById("csv-link");
+      if (csvLink && DATA.generated_at) {
+        csvLink.setAttribute("download", "watchlist_tracker_" + String(DATA.generated_at).slice(0, 10) + ".csv");
+      }
       fillGroups();
       renderHero();
       renderTabs();
