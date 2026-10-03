@@ -66,6 +66,7 @@ COLUMNS = [
     "signals",
     "last_updated",
     "fetch_status",
+    "archived",
 ]
 
 TAKE_PROFIT = 15.0
@@ -662,7 +663,7 @@ def has_signal(stock: dict, name: str) -> bool:
 
 
 def build_payload(records: list[dict], mode: str, generated_at: str, attempted_count: int) -> dict:
-    stocks = [to_stock(rec) for rec in records if rec.get("code")]
+    stocks = [to_stock(rec) for rec in records if rec.get("code") and not is_archived(rec)]
     unique = dedupe(stocks)
     priced = [stock for stock in unique if is_num(stock.get("change_pct"))]
     wins = sum(1 for stock in priced if stock["change_pct"] > 0)
@@ -992,10 +993,16 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def is_archived(rec: dict) -> bool:
+    return (rec.get("archived") or "").strip().lower() in {"1", "true", "yes", "archived"}
+
+
 def collect_tickers(records: list[dict]) -> list[str]:
     tickers: list[str] = []
     seen: set[str] = set()
     for rec in records:
+        if is_archived(rec):
+            continue
         asset = (rec.get("asset_type") or "").strip().upper()
         code = normalize_code(rec.get("code") or "")
         rec["code"] = code
@@ -1046,6 +1053,8 @@ def main() -> int:
     stamp = datetime.now(JST).isoformat(timespec="seconds")
     attempted = set(tickers)
     for rec in records:
+        if is_archived(rec):
+            continue
         ticker = rec.get("ticker") or ""
         hist = histories.get(ticker) if ticker in attempted else None
         update_record(rec, hist, today, stamp, ticker in attempted)

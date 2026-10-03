@@ -46,13 +46,15 @@ python -m http.server 8000
 
 ブラウザで http://127.0.0.1:8000/ を開きます。`file://` で HTML を開くと JSON を読めません。
 
-`migrate_rakuten_csv.py` は再実行しても、既存の登録日・基準株価・騰落を消しません。CSV から外れた銘柄も追跡を続けます。基準株価だけ取り直すときは、その行の `base_price` を空にして `daily_tracker.py` を再実行します。高値・安値の記録はそのまま残ります。
+`migrate_rakuten_csv.py` は楽天CSVとの差分同期です。キーはグループ名と銘柄コードです。両方にある行は登録日、基準株価、高値、安値、ステータス、strategy、source を引き継ぎます。楽天CSVにだけある行は、追加日を当日、基準株価を空、ステータスを「監視中」にして足します。楽天CSVから消えた行は追跡リストから外します。`--archive` または環境変数 `SYNC_ARCHIVE=1` のときは、消えた行を `archived=1` で末尾に残します。出力順は最新の楽天CSVの並びです。楽天CSVから銘柄が1件も読めないときは、追跡リストを書き換えません。基準株価だけ取り直すときは、その行の `base_price` を空にして `daily_tracker.py` を再実行します。
 
 YouTube 由来の棚卸し対象にするときは、`source` または `strategy` に `YouTube`（または `ユーチューブ`）を入れます。登録から 30 日たつと「棚卸し候補（30日経過）」になります。
 
 ## GitHub へ送る
 
 このフォルダを https://github.com/mnghfxiidm4ad-rgb/uneri-tracker の `main` に push すると、Actions の画面に `uneri-tracker` が出ます。初回は **Run workflow** で手動実行できます。
+
+`data/00ファイル.csv` を `main` に push すると、`sync-watchlist` が差分同期して追跡CSVを更新します。Actions の **sync-watchlist** を手動実行すると、同じ同期をその場で行えます。手動実行で「消えた銘柄をアーカイブして残す」をオンにすると、削除せず `archived=1` で残します。
 
 ## GitHub Secrets
 

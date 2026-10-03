@@ -1,0 +1,52 @@
+name: sync-watchlist
+
+# data/00ファイル.csv の更新を、履歴を残したまま watchlist_tracker.csv に反映する。
+on:
+  push:
+    branches: [main]
+    paths:
+      - "data/00ファイル.csv"
+  workflow_dispatch:
+    inputs:
+      archive_removed:
+        description: "消えた銘柄をアーカイブして残す"
+        type: boolean
+        default: false
+
+concurrency:
+  group: uneri-tracker-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: リポジトリを取得
+        uses: actions/checkout@v4
+
+      - name: Python 3.11 をセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 楽天CSVと追跡リストを同期
+        env:
+          SYNC_ARCHIVE: ${{ inputs.archive_removed }}
+          PYTHONIOENCODING: utf-8
+        run: python scripts/migrate_rakuten_csv.py
+
+      - name: 同期結果をコミット
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -- "data/watchlist_tracker.csv" "docs/watchlist_tracker.csv"
+          if git diff --cached --quiet; then
+            echo "コミットする変更はありません"
+          else
+            git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -m "chore: sync watchlist with Rakuten CSV [skip ci]"
+            git push
+          fi
