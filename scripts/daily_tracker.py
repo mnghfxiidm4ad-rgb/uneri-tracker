@@ -31,7 +31,13 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import yfinance as yf
 
-ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from rakuten_pages import group_sort_key, ordered_groups  # noqa: E402
+
+ROOT = SCRIPT_DIR.parent
 DATA_DIR = ROOT / "data"
 DOCS_DIR = ROOT / "docs"
 TRACKER_CSV = DATA_DIR / "watchlist_tracker.csv"
@@ -80,6 +86,10 @@ GAP_DOWN = -2.0
 REVIEW_DAYS = 30
 BATCH_SIZE = 25
 BATCH_SLEEP_SEC = 1.5
+REQUEST_GAP_SEC = 0.3
+BATCH_FAIL_COOLDOWN_SEC = 8.0
+RATE_LIMIT_SLEEP_SEC = 30.0
+RATE_LIMIT_MARKERS = ("429", "too many requests", "rate limit", "rate limited")
 
 STATUS_PRIORITY = [
     "利確目標到達",
@@ -165,9 +175,42 @@ def chronicle_url(code: str) -> str:
     return f"https://stockchronicle.app/?code={quote(str(code).strip())}"
 
 
+def _bare_symbol(value: str) -> str:
+    text = (value or "").strip()
+    if text.upper().endswith(".T"):
+        return text[:-2]
+    return text
+
+
+def yahoo_quote_url(stock: dict) -> str:
+    """日本株は Yahoo!ファイナンス、米国株・ETFは Yahoo Finance の銘柄ページ。"""
+    asset = str(stock.get("asset_type") or "").strip().upper()
+    code = _bare_symbol(str(stock.get("code") or ""))
+    ticker = str(stock.get("ticker") or "").strip()
+    symbol = code or _bare_symbol(ticker)
+    if not symbol:
+        return ""
+    japanese = asset == "STK" or ticker.upper().endswith(".T")
+    if asset == "USS":
+        japanese = False
+    if japanese:
+        return f"https://finance.yahoo.co.jp/quote/{quote(symbol, safe='')}.T"
+    us = _bare_symbol(ticker or code)
+    if not us:
+        return ""
+    return f"https://finance.yahoo.com/quote/{quote(us, safe='')}"
+
+
 def is_youtube(*parts) -> bool:
     text = " ".join("" if part is None else str(part) for part in parts).lower()
     return "youtube" in text or "ユーチューブ" in text
+
+
+def is_youtube_tracking(group_name="", source="", strategy="") -> bool:
+    """YouTube・新規グループ、または source/strategy に YouTube を含む場合。"""
+    if str(group_name or "").strip() == "YouTube・新規":
+        return True
+    return is_youtube(source, strategy)
 
 
 def fmt_pct(value) -> str:
@@ -324,6 +367,28 @@ def extract_ticker_frame(frame: pd.DataFrame, ticker: str) -> pd.DataFrame | Non
     return None
 
 
+def looks_like_rate_limit(exc: BaseException | str | None) -> bool:
+    text = str(exc or "").lower()
+    return any(marker in text for marker in RATE_LIMIT_MARKERS)
+
+
+def download_one(ticker: str) -> tuple[pd.DataFrame | None, bool]:
+    """1銘柄を取得する。戻り値は (足, レート制限か)。失敗しても例外は外へ出さない。"""
+    try:
+        single = download_raw(ticker)
+    except Exception as exc:
+        logging.warning("個別取得失敗 %s: %s", ticker, exc)
+        return None, looks_like_rate_limit(exc)
+    if not isinstance(single, pd.DataFrame) or single.empty:
+        return None, False
+    hist = extract_ticker_frame(single, ticker)
+    if hist is None and not isinstance(single.columns, pd.MultiIndex):
+        hist = normalize_ohlcv(single)
+    if hist is None or hist.empty:
+        return None, False
+    return hist, False
+
+
 def download_raw(tickers: list[str] | str):
     kwargs = {
         "tickers": tickers,
@@ -340,53 +405,77 @@ def download_raw(tickers: list[str] | str):
         return yf.download(**kwargs)
     except Exception as exc:
         logging.warning("yfinance の取得に失敗しました (%s): %s", tickers if isinstance(tickers, str) else len(tickers), exc)
+        if looks_like_rate_limit(exc):
+            raise
         return None
 
 
 def fetch_all(tickers: list[str]) -> dict[str, pd.DataFrame]:
     histories: dict[str, pd.DataFrame] = {}
     total = len(tickers)
+    abort_remaining = False
+    empty_batches = 0
     for start in range(0, total, BATCH_SIZE):
+        if abort_remaining:
+            logging.warning("レート制限のため残り %s ティッカーは取得を打ち切り、前回値を維持します", total - start)
+            break
         batch = tickers[start : start + BATCH_SIZE]
         logging.info("株価取得 %s-%s / %s", start + 1, start + len(batch), total)
         frame = None
+        last_batch_error: Exception | None = None
         for attempt in range(2):
             try:
                 frame = download_raw(batch if len(batch) > 1 else batch[0])
             except Exception as exc:
                 logging.warning("バッチ失敗 %s/2: %s", attempt + 1, exc)
+                last_batch_error = exc
                 frame = None
+                if looks_like_rate_limit(exc):
+                    time.sleep(RATE_LIMIT_SLEEP_SEC)
+                    continue
             if isinstance(frame, pd.DataFrame) and not frame.empty:
                 break
             time.sleep(2.5 * (attempt + 1))
 
         missing: list[str] = []
         if not isinstance(frame, pd.DataFrame) or frame.empty:
-            missing = list(batch)
-        elif len(batch) == 1 and not isinstance(frame.columns, pd.MultiIndex):
-            hist = normalize_ohlcv(frame)
-            if hist is not None and not hist.empty:
-                histories[batch[0]] = hist
+            empty_batches += 1
+            if looks_like_rate_limit(last_batch_error) or empty_batches >= 2:
+                logging.warning("バッチ取得が連続で失敗したため個別連打をせず、残りは前回値を維持します")
+                abort_remaining = True
+                time.sleep(RATE_LIMIT_SLEEP_SEC)
             else:
+                logging.warning(
+                    "バッチ未取得のため %.1fs 待って、このバッチだけ個別に再取得します",
+                    BATCH_FAIL_COOLDOWN_SEC,
+                )
+                time.sleep(BATCH_FAIL_COOLDOWN_SEC)
                 missing = list(batch)
         else:
-            for ticker in batch:
-                hist = extract_ticker_frame(frame, ticker)
+            empty_batches = 0
+            if len(batch) == 1 and not isinstance(frame.columns, pd.MultiIndex):
+                hist = normalize_ohlcv(frame)
                 if hist is not None and not hist.empty:
-                    histories[ticker] = hist
+                    histories[batch[0]] = hist
                 else:
-                    missing.append(ticker)
+                    missing = list(batch)
+            else:
+                for ticker in batch:
+                    hist = extract_ticker_frame(frame, ticker)
+                    if hist is not None and not hist.empty:
+                        histories[ticker] = hist
+                    else:
+                        missing.append(ticker)
 
         for ticker in missing:
-            time.sleep(0.4)
-            try:
-                single = download_raw(ticker)
-                hist = extract_ticker_frame(single, ticker) if isinstance(single, pd.DataFrame) else None
-                if hist is None and isinstance(single, pd.DataFrame) and not isinstance(single.columns, pd.MultiIndex):
-                    hist = normalize_ohlcv(single)
-            except Exception as exc:
-                logging.warning("個別取得失敗 %s: %s", ticker, exc)
-                hist = None
+            if abort_remaining:
+                break
+            time.sleep(REQUEST_GAP_SEC)
+            hist, limited = download_one(ticker)
+            if limited:
+                logging.warning("レート制限を検出。残り取得を打ち切ります")
+                abort_remaining = True
+                time.sleep(RATE_LIMIT_SLEEP_SEC)
             if hist is not None and not hist.empty:
                 histories[ticker] = hist
             else:
@@ -488,7 +577,7 @@ def apply_status(rec: dict, today: date, stamp: str, quote: dict | None) -> None
     elif base not in (None, 0) and current is not None:
         change = (current - base) / base * 100
 
-    youtube = is_youtube(rec.get("source"), rec.get("strategy"), rec.get("group_name"))
+    youtube = is_youtube_tracking(rec.get("group_name"), rec.get("source"), rec.get("strategy"))
     status, signals = classify(change, rsi, dev, days, youtube, volume_ratio, gap, current, ma25)
     rec["days_elapsed"] = str(days)
     rec["base_price"] = num_to_csv(base)
@@ -542,7 +631,12 @@ def read_tracker(path: Path) -> pd.DataFrame:
         except UnicodeError as exc:
             last_error = exc
             continue
-    raise RuntimeError(f"ウォッチリストを読み込めません: {path} ({last_error})")
+    logging.warning("厳格な読込に失敗したため cp932/replace で継続します: %s (%s)", path, last_error)
+    frame = pd.read_csv(
+        path, dtype=str, encoding="cp932", encoding_errors="replace", keep_default_na=False
+    )
+    frame.columns = [str(col).strip() for col in frame.columns]
+    return frame
 
 
 
@@ -564,7 +658,9 @@ def write_tracker(path: Path, records: list[dict]) -> None:
     frame = frame.astype(str).replace({"nan": "", "None": "", "<NA>": ""})
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    frame.to_csv(tmp, index=False, encoding="utf-8-sig", lineterminator="\n")
+    frame.to_csv(
+        tmp, index=False, encoding="utf-8-sig", encoding_errors="replace", lineterminator="\n"
+    )
     os.replace(tmp, path)
     publish_tracker_csv(path)
 
@@ -608,7 +704,7 @@ def to_stock(rec: dict) -> dict:
         "price_date": (rec.get("price_date") or "").strip() or None,
         "status": (rec.get("status") or "監視中").strip(),
         "signals": signals,
-        "youtube": is_youtube(rec.get("source"), rec.get("strategy"), group_name),
+        "youtube": is_youtube_tracking(group_name, rec.get("source"), rec.get("strategy")),
         "fetch_status": (rec.get("fetch_status") or "").strip(),
         "chronicle_url": chronicle_url(code),
     }
@@ -664,6 +760,7 @@ def has_signal(stock: dict, name: str) -> bool:
 
 def build_payload(records: list[dict], mode: str, generated_at: str, attempted_count: int) -> dict:
     stocks = [to_stock(rec) for rec in records if rec.get("code") and not is_archived(rec)]
+    stocks.sort(key=lambda stock: (group_sort_key(stock.get("group_name") or ""), stock.get("code") or ""))
     unique = dedupe(stocks)
     priced = [stock for stock in unique if is_num(stock.get("change_pct"))]
     wins = sum(1 for stock in priced if stock["change_pct"] > 0)
@@ -702,10 +799,8 @@ def build_payload(records: list[dict], mode: str, generated_at: str, attempted_c
     us_gainers, us_losers = best_worst(us, "day_change_pct", 10)
     top_gainers, top_losers = best_worst(unique, "change_pct", 10)
     weekly_gainers, weekly_losers = best_worst(unique, "week_change_pct", 10)
-    groups: list[str] = []
-    for stock in stocks:
-        if stock["group_name"] and stock["group_name"] not in groups:
-            groups.append(stock["group_name"])
+    present = [stock["group_name"] for stock in stocks if stock.get("group_name")]
+    groups = ordered_groups(present, include_empty=True)
 
     note = ""
     if attempted_count and fetch_ok == 0:
@@ -778,8 +873,9 @@ def pct_color(value) -> str:
     return "#dc2626" if number > 0 else "#059669"
 
 
-def code_link(code: str) -> str:
-    url = chronicle_url(code)
+def code_link(stock: dict) -> str:
+    code = stock.get("code") or ""
+    url = yahoo_quote_url(stock) or chronicle_url(str(code))
     return (
         f'<a href="{h(url)}" style="color:#9f1239;font-weight:700;text-decoration:none">{h(code)}</a>'
     )
@@ -797,11 +893,18 @@ def render_stock_row(stock: dict, primary: str) -> str:
         secondary = (
             f'<div style="color:#6b7280;font-size:12px;margin-top:2px">登録来 {h(fmt_pct(stock.get("change_pct")))}</div>'
         )
+    quote_url = yahoo_quote_url(stock)
+    if quote_url:
+        name_html = (
+            f'<a href="{h(quote_url)}" style="color:#111827;font-weight:700;text-decoration:underline">{h(name)}</a>'
+        )
+    else:
+        name_html = h(name)
     return f"""
       <tr>
         <td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;vertical-align:top">
-          <div style="font-weight:700;color:#111827;font-size:14px">{h(name)}</div>
-          <div style="font-size:12px;color:#6b7280;margin-top:2px">{code_link(stock.get("code") or "")} · {h(group)}</div>
+          <div style="font-weight:700;color:#111827;font-size:14px">{name_html}</div>
+          <div style="font-size:12px;color:#6b7280;margin-top:2px">{code_link(stock)} · {h(group)}</div>
         </td>
         <td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;text-align:right;vertical-align:top;white-space:nowrap">
           <div style="font-weight:700;color:#111827">{h(fmt_price(stock.get("current_price")))}</div>
@@ -838,7 +941,7 @@ def render_section(title: str, stocks: list[dict], primary: str, limit: int = 30
         text = [f"## {title}"]
         for stock in shown:
             text.append(
-                f"- {stock.get('code')} {stock.get('name') or ''} {fmt_pct(stock.get(primary))} {stock.get('chronicle_url')}"
+                f"- {stock.get('code')} {stock.get('name') or ''} {fmt_pct(stock.get(primary))} {yahoo_quote_url(stock)}"
             )
         if hidden:
             text.append(f"ほか {hidden} 件")
@@ -941,7 +1044,7 @@ def build_email(mode: str, payload: dict) -> tuple[str, str, str]:
           <p style="margin:14px 0 0"><a href="{h(dashboard)}" style="display:inline-block;background:#9f1239;color:#ffffff;text-decoration:none;padding:10px 14px;border-radius:8px;font-weight:700;font-size:14px">ダッシュボードを開く</a></p>
           {''.join(html_parts)}
           {failed_html}
-          <p style="margin:22px 0 0;color:#9ca3af;font-size:11px">上昇は赤、下落は緑。各コードは StockChronicle へリンクしています。数値は登録来騰落で、朝の米国株と週末の週間欄だけ直前セッションの騰落です。</p>
+          <p style="margin:22px 0 0;color:#9ca3af;font-size:11px">上昇は赤、下落は緑。銘柄名とコードは Yahoo!ファイナンスへリンクしています。数値は登録来騰落で、朝の米国株と週末の週間欄だけ直前セッションの騰落です。</p>
         </td></tr>
       </table>
     </td></tr>

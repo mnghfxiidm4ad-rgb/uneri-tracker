@@ -1,12 +1,12 @@
 name: uneri-tracker
 
 # スケジュールは UTC。日本は夏時間がないため、この対応は通年で固定。
-# 朝  JST 平日 08:30 = UTC 23:30（日〜木）
+# 朝  JST 平日 08:15 = UTC 23:15（日〜木）
 # 夕  JST 平日 16:00 = UTC 07:00（月〜金）
 # 週末 JST 土曜 10:00 = UTC 01:00（土）
 on:
   schedule:
-    - cron: "30 23 * * 0-4"
+    - cron: "15 23 * * 0-4"
     - cron: "0 7 * * 1-5"
     - cron: "0 1 * * 6"
   workflow_dispatch:
@@ -58,7 +58,7 @@ jobs:
           set -euo pipefail
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             MODE="$INPUT_MODE"
-          elif [ "$EVENT_SCHEDULE" = "30 23 * * 0-4" ]; then
+          elif [ "$EVENT_SCHEDULE" = "15 23 * * 0-4" ]; then
             MODE="morning"
           elif [ "$EVENT_SCHEDULE" = "0 7 * * 1-5" ]; then
             MODE="evening"

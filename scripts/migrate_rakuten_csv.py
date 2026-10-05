@@ -5,11 +5,17 @@
 1行目の ``MS2,2`` のような形式ヘッダは読み飛ばす。
 
 日本株（STK）は ``{code}.T``、米国株（USS）は ``{code}`` に変換する。
-同じ銘柄が複数グループにある場合は、グループごとに1行残す。
-突合キーは (group_name, code)。両方にある行は登録日・基準株価・高値・安値などの履歴を引き継ぐ。
+グループ名は楽天お気に入り10ページへ正規化する（旧名はエイリアス変換）。
+同じ銘柄が複数グループにある場合は、正規化後のグループごとに1行残す。
+突合キーは正規化後の (group_name, code)。両方にある行は登録日・基準株価・高値・安値などの履歴を引き継ぐ。
 楽天CSVにだけある行は当日追加とし、基準株価は空のままにする。
 楽天CSVから消えた行は、既定では追跡リストから除外する。--archive で archived=1 として末尾に残せる。
-出力順は最新の楽天CSVの出現順。
+出力順は Page1→Page10、ページ内は最新の楽天CSVの出現順。
+追跡CSVは UTF-8 BOM、楽天へ戻す 6 列CSVは CP932 で data/rakuten_10pages.csv に書く。
+
+エンコーディング:
+  - 楽天入力: cp932 + errors=replace（フォールバックあり）
+  - watchlist_tracker.csv / JSON: utf-8-sig（GitHub Pages 向け）。CP932 出力は --export-cp932
 """
 
 from __future__ import annotations
@@ -20,12 +26,23 @@ import json
 import logging
 import os
 import sys
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
-ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from rakuten_pages import (  # noqa: E402
+    RAKUTEN_PAGES,
+    canonicalize_group_name,
+    ordered_groups,
+)
+
+ROOT = SCRIPT_DIR.parent
 DATA_DIR = ROOT / "data"
 DOCS_DIR = ROOT / "docs"
 JST = ZoneInfo("Asia/Tokyo")
@@ -109,9 +126,16 @@ def is_youtube(*parts: str) -> bool:
     return "youtube" in text or "ユーチューブ" in text
 
 
+def is_youtube_tracking(group_name: str = "", source: str = "", strategy: str = "") -> bool:
+    if (group_name or "").strip() == "YouTube・新規":
+        return True
+    return is_youtube(source, strategy)
+
+
 def read_rakuten_rows(path: Path) -> list[list[str]]:
+    """楽天CSVを読む。CP932 を優先し、UTF-8 ならそちらを使う。最後だけ置換して継続する。"""
     last_error: Exception | None = None
-    for encoding in ENCODINGS:
+    for encoding in ("cp932", "utf-8-sig", "utf-8"):
         try:
             with path.open("r", encoding=encoding, newline="") as handle:
                 rows = list(csv.reader(handle))
@@ -119,8 +143,13 @@ def read_rakuten_rows(path: Path) -> list[list[str]]:
             return rows
         except UnicodeError as exc:
             last_error = exc
-            continue
-    raise RuntimeError(f"文字コードを判定できません: {path} ({last_error})")
+            logging.warning("%s では読めません: %s", encoding, exc)
+    logging.warning("厳格な読込に失敗したため cp932/replace で継続します: %s", last_error)
+    with path.open("r", encoding="cp932", errors="replace", newline="") as handle:
+        rows = list(csv.reader(handle))
+    replaced = sum(1 for row in rows for cell in row if "\ufffd" in cell)
+    logging.info("楽天CSVを置換読込しました: %s (%s行, 置換セル目安=%s)", path, len(rows), replaced)
+    return rows
 
 
 def parse_rakuten(rows: list[list[str]], today: str) -> list[dict[str, str]]:
@@ -137,14 +166,19 @@ def parse_rakuten(rows: list[list[str]], today: str) -> list[dict[str, str]]:
         if not code:
             logging.warning("コードが空の行をスキップしました: %s", raw)
             continue
-        group_name = cells[2]
+        raw_group = cells[2]
+        group_name = canonicalize_group_name(raw_group, warn=True, log=logging)
         sub_id = cells[3]
         market = cells[4]
         name = cells[5]
-        key = (code, group_name)
+        # 突合・重複排除は正規化後の (group_name, code)
+        key = (group_name, code)
         if key in seen:
             continue
         seen.add(key)
+        source = "楽天インポート"
+        if group_name == "YouTube・新規":
+            source = "YouTube"
         parsed.append(
             {
                 "code": code,
@@ -155,7 +189,7 @@ def parse_rakuten(rows: list[list[str]], today: str) -> list[dict[str, str]]:
                 "market": market,
                 "sub_id": sub_id,
                 "strategy": "",
-                "source": "楽天インポート",
+                "source": source,
                 "added_date": today,
                 "base_price": "",
                 "current_price": "",
@@ -184,9 +218,16 @@ def read_existing(path: Path) -> tuple[list[dict[str, str]], list[str]]:
     if not path.exists():
         return [], []
     last_error: Exception | None = None
-    for encoding in ("utf-8-sig", "utf-8", "cp932", "shift_jis"):
+    encodings = ("utf-8-sig", "utf-8", "cp932", "shift_jis")
+    for index, encoding in enumerate(encodings):
+        replace = index == len(encodings) - 1
         try:
-            with path.open("r", encoding=encoding, newline="") as handle:
+            with path.open(
+                "r",
+                encoding=encoding,
+                errors="replace" if replace else "strict",
+                newline="",
+            ) as handle:
                 reader = csv.DictReader(handle)
                 fieldnames = list(reader.fieldnames or [])
                 rows = []
@@ -197,6 +238,8 @@ def read_existing(path: Path) -> tuple[list[dict[str, str]], list[str]]:
                         if key
                     }
                     rows.append(cleaned)
+            if replace:
+                logging.warning("既存トラッカーを置換つきで読みました: %s", path)
             logging.info("既存トラッカーを読み込みました: %s (%s行)", path, len(rows))
             return rows, fieldnames
         except UnicodeError as exc:
@@ -206,11 +249,21 @@ def read_existing(path: Path) -> tuple[list[dict[str, str]], list[str]]:
 
 
 def sync_key(row: dict[str, str]) -> tuple[str, str] | None:
+    """既存行のキー。旧グループ名も正規化して (group_name, code) で突合する。"""
     code = normalize_code(row.get("code", ""))
-    group_name = (row.get("group_name") or "").strip()
     if not code:
         return None
+    group_name = canonicalize_group_name(row.get("group_name") or "", warn=False)
     return (group_name, code)
+
+
+def _row_richness(row: dict[str, str]) -> tuple[int, int, int]:
+    """重複時に履歴が厚い行を優先するスコア。"""
+    return (
+        1 if (row.get("base_price") or "").strip() else 0,
+        1 if (row.get("added_date") or "").strip() else 0,
+        1 if (row.get("max_high_price") or "").strip() or (row.get("min_low_price") or "").strip() else 0,
+    )
 
 
 def index_existing(existing: list[dict[str, str]]) -> dict[tuple[str, str], dict[str, str]]:
@@ -225,7 +278,7 @@ def index_existing(existing: list[dict[str, str]]) -> dict[tuple[str, str], dict
             old_map[key] = row
             order.append(key)
             continue
-        if not (current.get("base_price") or "").strip() and (row.get("base_price") or "").strip():
+        if _row_richness(row) > _row_richness(current):
             old_map[key] = row
     old_map["__order__"] = order  # type: ignore[assignment]
     return old_map
@@ -293,9 +346,15 @@ def merge_rows(
         if not archive:
             continue
         old = dict(old_map[key])
+        # アーカイブ行も正規グループ名へ寄せる
+        old["group_name"] = group_name
         old["archived"] = "1"
         archived_rows.append(old)
         logging.info("アーカイブ: %s / %s", group_name, code)
+
+    # Page1→Page10、ページ内は楽天CSV出現順（merged は既にその順）
+    merged = _stable_page_order(merged)
+    archived_rows = _stable_page_order(archived_rows)
 
     return merged + archived_rows, {
         "kept": kept,
@@ -303,6 +362,23 @@ def merge_rows(
         "removed": len(removed),
         "archived": len(archived_rows),
     }
+
+
+def _stable_page_order(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Page1→Page10。同一ページ内は元の並び（楽天出現順）を維持。"""
+    buckets: dict[str, list[dict[str, str]]] = {name: [] for name in RAKUTEN_PAGES}
+    extras: list[dict[str, str]] = []
+    for row in rows:
+        name = (row.get("group_name") or "").strip()
+        if name in buckets:
+            buckets[name].append(row)
+        else:
+            extras.append(row)
+    ordered: list[dict[str, str]] = []
+    for name in RAKUTEN_PAGES:
+        ordered.extend(buckets[name])
+    ordered.extend(extras)
+    return ordered
 
 
 
@@ -321,13 +397,62 @@ def write_tracker(path: Path, rows: list[dict[str, str]], extra_columns: list[st
         if column and column not in fieldnames:
             fieldnames.append(column)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8-sig", newline="") as handle:
+    with tmp.open("w", encoding="utf-8-sig", errors="replace", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n", extrasaction="ignore")
         writer.writeheader()
         for row in rows:
             writer.writerow({name: (row.get(name) or "") for name in fieldnames})
     tmp.replace(path)
     publish_tracker_csv(path)
+
+
+def write_cp932_export(path: Path, rows: list[dict[str, str]], extra_columns: list[str]) -> None:
+    """任意の CP932 エクスポート（Pages 用 utf-8-sig とは別ファイル）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = list(COLUMNS)
+    for column in extra_columns:
+        if column and column not in fieldnames:
+            fieldnames.append(column)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="cp932", errors="replace", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n", extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({name: (row.get(name) or "") for name in fieldnames})
+    tmp.replace(path)
+    logging.info("CP932 エクスポートを書きました: %s", path)
+
+
+def write_rakuten_pages_csv(path: Path, rows: list[dict[str, str]]) -> None:
+    """楽天お気に入りと同じ6列を、Page1→Page10 の順で CP932 出力する。"""
+    active: list[dict[str, str]] = []
+    for row in rows:
+        flag = (row.get("archived") or "").strip().lower()
+        if flag in {"1", "true", "yes", "archived"}:
+            continue
+        active.append(row)
+    active = _stable_page_order(active)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="cp932", errors="replace", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\r\n", quoting=csv.QUOTE_ALL)
+        writer.writerow(["MS2", "2"])
+        for row in active:
+            writer.writerow(
+                [
+                    row.get("asset_type") or "",
+                    row.get("code") or "",
+                    row.get("group_name") or "",
+                    row.get("sub_id") or "",
+                    row.get("market") or "",
+                    row.get("name") or "",
+                ]
+            )
+    tmp.replace(path)
+    docs_copy = DOCS_DIR / path.name
+    docs_copy.parent.mkdir(parents=True, exist_ok=True)
+    docs_copy.write_bytes(path.read_bytes())
+    logging.info("楽天用CSVを書きました: %s (%s行, cp932)", path, len(active))
 
 
 def stock_stub(row: dict[str, str]) -> dict:
@@ -360,7 +485,7 @@ def stock_stub(row: dict[str, str]) -> dict:
         "price_date": None,
         "status": row.get("status") or "監視中",
         "signals": [],
-        "youtube": is_youtube(row.get("source", ""), row.get("strategy", ""), group_name),
+        "youtube": is_youtube_tracking(group_name, row.get("source", ""), row.get("strategy", "")),
         "fetch_status": "",
         "chronicle_url": chronicle_url(code),
     }
@@ -372,11 +497,8 @@ def write_skeleton(rows: list[dict[str, str]], generated_at: str, force: bool) -
         logging.info("既存の latest_summary.json は維持します（株価データの上書き防止）")
         return
     stocks = [stock_stub(row) for row in rows]
-    groups: list[str] = []
-    for stock in stocks:
-        group_name = stock["group_name"]
-        if group_name and group_name not in groups:
-            groups.append(group_name)
+    present = [stock["group_name"] for stock in stocks if stock.get("group_name")]
+    groups = ordered_groups(present, include_empty=True)
     unique_codes = len({stock["code"] for stock in stocks})
     payload = {
         "generated_at": generated_at,
@@ -452,6 +574,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="楽天CSVから消えた銘柄を削除せず、archived=1 で末尾に残す",
     )
+    parser.add_argument(
+        "--export-cp932",
+        type=Path,
+        default=None,
+        help="追跡マスターとは別に CP932 のCSVを書き出す（Pages用utf-8-sigは維持）",
+    )
     return parser.parse_args()
 
 
@@ -487,23 +615,25 @@ def main() -> int:
         )
         extra = [name for name in fieldnames if name not in COLUMNS]
         write_tracker(args.output, rows, extra)
+        write_rakuten_pages_csv(DATA_DIR / "rakuten_10pages.csv", rows)
+        if args.export_cp932:
+            write_cp932_export(args.export_cp932, rows, extra)
         write_skeleton(rows, generated_at, args.force_summary)
     except Exception:
         logging.exception("移行に失敗しました")
         return 1
 
-    groups: list[str] = []
-    for row in rows:
-        if row.get("group_name") and row["group_name"] not in groups:
-            groups.append(row["group_name"])
+    present = [row["group_name"] for row in rows if row.get("group_name")]
+    groups = ordered_groups(present, include_empty=True)
+    counts = Counter(present)
     unique_codes = len({row.get("code") for row in rows})
     logging.info(
-        "移行完了: %s行 / ユニーク%s銘柄 / グループ%s (%s)",
+        "移行完了: %s行 / ユニーク%s銘柄 / 正規10ページ",
         len(rows),
         unique_codes,
-        len(groups),
-        "、".join(groups),
     )
+    for name in groups:
+        logging.info("  %s: %s件", name, counts.get(name, 0))
     logging.info("出力: %s", args.output)
     return 0
 

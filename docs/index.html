@@ -97,6 +97,15 @@
     .head { display: flex; justify-content: space-between; gap: 10px; }
     .name { font-weight: 700; font-size: 16px; }
     .code { color: var(--muted); font-weight: 600; font-size: 13px; margin-left: 6px; }
+    a.quote-link {
+      color: inherit;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      -webkit-tap-highlight-color: transparent;
+    }
+    a.quote-link:hover, a.quote-link:focus-visible { color: var(--accent); }
+    a.quote-link.code { color: var(--muted); }
+    a.quote-link.code:hover, a.quote-link.code:focus-visible { color: var(--accent); }
     .meta, .range { color: var(--muted); font-size: 12px; margin-top: 3px; }
     .price { text-align: right; font-weight: 800; font-size: 18px; }
     .pct { text-align: right; font-weight: 800; }
@@ -179,7 +188,7 @@
           <p>出来高急増: 当日出来高が直前5営業日平均の 2 倍以上。</p>
           <p>ギャップダウン: 始値が前日終値より -2% 以下。</p>
           <p>利確目標到達: 登録来 +15% 以上。損切り警戒: 登録来 -8% 以下。</p>
-          <p>棚卸し候補: source / strategy / グループ名に YouTube を含み、登録から 30 日以上。</p>
+          <p>棚卸し候補: グループが「YouTube・新規」、または source / strategy に YouTube を含み、登録から 30 日以上。</p>
         </details>
         <p><a href="https://github.com/mnghfxiidm4ad-rgb/uneri-tracker">GitHub</a></p>
       </footer>
@@ -196,6 +205,20 @@
       "ギャップダウン": ["ギャップ", "gap"],
       "棚卸し候補（30日経過）": ["棚卸し", "review"]
     };
+    // scripts/rakuten_pages.py の RAKUTEN_PAGES と同一順（Page1→Page10）
+    const PAGE_ORDER = [
+      "日米コア",
+      "長期・配当",
+      "金利・内需",
+      "YouTube・新規",
+      "AI・半導体",
+      "先端テック",
+      "新エネルギー",
+      "環境・インフラ",
+      "米国株・ETF",
+      "スイング監視"
+    ];
+    const PAGE_INDEX = Object.fromEntries(PAGE_ORDER.map((name, index) => [name, index]));
     const MODE = { morning: "朝レポート", evening: "夕方レポート", weekend: "週末棚卸し", migrate: "初期移行" };
     let DATA = null;
     const state = { tab: "signals", q: "", group: "", asset: "", sort: "group" };
@@ -231,6 +254,34 @@
       if (stock.groups && stock.groups.length) return stock.groups.join(" / ");
       return stock.group_name || "";
     }
+    function bareSymbol(value) {
+      return String(value || "").trim().replace(/\.T$/i, "");
+    }
+    function isJapaneseEquity(stock) {
+      const asset = String(stock.asset_type || "").toUpperCase();
+      if (asset === "STK") return true;
+      if (asset === "USS") return false;
+      const ticker = String(stock.ticker || "");
+      if (/\.T$/i.test(ticker)) return true;
+      const code = bareSymbol(stock.code || stock.ticker);
+      if (/^\d{3,4}[A-Za-z]?$/.test(code)) return true;
+      return false;
+    }
+    function yahooQuoteUrl(stock) {
+      const symbol = bareSymbol(stock.code || stock.ticker);
+      if (!symbol) return "";
+      if (isJapaneseEquity(stock)) {
+        return "https://finance.yahoo.co.jp/quote/" + encodeURIComponent(symbol) + ".T";
+      }
+      const us = bareSymbol(stock.ticker || stock.code);
+      return us ? "https://finance.yahoo.com/quote/" + encodeURIComponent(us) : "";
+    }
+    function quoteLink(label, url, className) {
+      const text = esc(label);
+      const cls = className ? ` class="${className}"` : "";
+      if (!url) return className ? `<span${cls}>${text}</span>` : text;
+      return `<a${cls} href="${esc(url)}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+    }
     function card(stock, primary, rank) {
       const key = primary || "change_pct";
       const tags = (stock.signals || []).map((name) => {
@@ -239,11 +290,14 @@
       }).join("");
       const secondary = key === "change_pct" ? "" : `<div class="meta">登録来 <span class="${pctClass(stock.change_pct)}">${fmtPct(stock.change_pct)}</span></div>`;
       const rankHtml = rank ? `<div class="rank">#${rank}</div>` : "";
+      const yahoo = yahooQuoteUrl(stock);
+      const nameLink = quoteLink(stock.name || stock.code, yahoo, "quote-link");
+      const codeLink = quoteLink(stock.code, yahoo, "quote-link code");
       return `<article class="card">
         <div class="head">
           <div>
             ${rankHtml}
-            <div class="name">${esc(stock.name || stock.code)}<span class="code">${esc(stock.code)}</span></div>
+            <div class="name">${nameLink}${codeLink}</div>
             <div class="meta">${esc(groupsOf(stock) || "グループなし")} · ${esc(stock.market || stock.asset_type || "")} · ${isNum(stock.days_elapsed) ? stock.days_elapsed + "日" : "—"}</div>
           </div>
           <div>
@@ -326,10 +380,21 @@
       } else if (state.sort === "code") {
         rows.sort((a, b) => String(a.code).localeCompare(String(b.code), "ja"));
       } else {
-        rows.sort((a, b) => String(a.group_name).localeCompare(String(b.group_name), "ja")
+        rows.sort((a, b) => groupRank(a.group_name) - groupRank(b.group_name)
           || String(a.code).localeCompare(String(b.code), "ja"));
       }
       return rows;
+    }
+    function groupRank(name) {
+      const key = String(name || "");
+      return Object.prototype.hasOwnProperty.call(PAGE_INDEX, key) ? PAGE_INDEX[key] : PAGE_ORDER.length;
+    }
+    function orderedGroupNames(names) {
+      const present = new Set((names || []).filter(Boolean));
+      const ordered = PAGE_ORDER.filter((name) => present.has(name));
+      const extras = [...present].filter((name) => !Object.prototype.hasOwnProperty.call(PAGE_INDEX, name))
+        .sort((a, b) => a.localeCompare(b, "ja"));
+      return ordered.concat(extras);
     }
     function renderMain() {
       const root = document.getElementById("main");
@@ -357,16 +422,34 @@
         return;
       }
       if (state.tab === "review") {
-        const hint = `<p class="empty">YouTube 由来にするには、watchlist の source か strategy に YouTube と入れてください。30日未満のときは棚卸しリストは空です。</p>`;
+        const hint = `<p class="empty">【要棚卸し】は YouTube・新規グループ、または source/strategy に YouTube を含む銘柄のうち登録30日以上を集約します。あわせて登録後30日超の一覧も表示します。</p>`;
         root.innerHTML = hint
           + section("YouTube・30日経過", DATA.youtube_review, "change_pct")
           + section("登録後30日超", DATA.review_30d, "change_pct");
         return;
       }
       const rows = filteredStocks();
-      root.innerHTML = `<section class="section"><h2>全銘柄 <span class="count">${rows.length} / ${(DATA.stocks || []).length}</span></h2>`
-        + (rows.length ? `<div class="grid">${rows.map((stock) => card(stock)).join("")}</div>` : `<p class="empty">一致する銘柄はありません。</p>`)
-        + `</section>`;
+      const header = `<section class="section"><h2>全銘柄 <span class="count">${rows.length} / ${(DATA.stocks || []).length}</span></h2></section>`;
+      if (!rows.length) {
+        root.innerHTML = header + `<p class="empty">一致する銘柄はありません。</p>`;
+        return;
+      }
+      if (state.sort !== "group") {
+        root.innerHTML = header + `<div class="grid">${rows.map((stock) => card(stock)).join("")}</div>`;
+        return;
+      }
+      const byGroup = new Map();
+      rows.forEach((stock) => {
+        const key = stock.group_name || "（未分類）";
+        if (!byGroup.has(key)) byGroup.set(key, []);
+        byGroup.get(key).push(stock);
+      });
+      const body = orderedGroupNames([...byGroup.keys()]).map((name) => {
+        const items = byGroup.get(name) || [];
+        return `<section class="section"><h2>${esc(name)} <span class="count">${items.length}</span></h2>`
+          + `<div class="grid">${items.map((stock) => card(stock)).join("")}</div></section>`;
+      }).join("");
+      root.innerHTML = header + body;
     }
     function setTab(id) {
       state.tab = id;
@@ -376,7 +459,11 @@
     }
     function fillGroups() {
       const select = document.getElementById("group");
-      (DATA.groups || []).forEach((group) => {
+      const fromData = DATA.groups || [];
+      const names = orderedGroupNames(fromData.length ? fromData : PAGE_ORDER);
+      // JSON に空ページが含まれていなくても、正規10ページは選択肢に出す
+      const finalNames = orderedGroupNames([...new Set([...PAGE_ORDER, ...names])]);
+      finalNames.forEach((group) => {
         const option = document.createElement("option");
         option.value = group;
         option.textContent = group;
