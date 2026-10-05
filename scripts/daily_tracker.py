@@ -658,9 +658,7 @@ def write_tracker(path: Path, records: list[dict]) -> None:
     frame = frame.astype(str).replace({"nan": "", "None": "", "<NA>": ""})
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    frame.to_csv(
-        tmp, index=False, encoding="utf-8-sig", encoding_errors="replace", lineterminator="\n"
-    )
+    frame.to_csv(tmp, index=False, encoding="utf-8-sig", lineterminator="\n")
     os.replace(tmp, path)
     publish_tracker_csv(path)
 
